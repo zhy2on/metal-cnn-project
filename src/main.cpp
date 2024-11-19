@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "cnn.h"
-#include "cnn_opencl.h"
+#include "cnn_metal.h"
 
 const char* CLASS_NAME[] = {"airplane", "automobile", "bird",  "cat",  "deer",
 							"dog",		"frog",		  "horse", "ship", "truck"};

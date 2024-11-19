@@ -1,6 +1,6 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#include "cnn_opencl.h"
+#include "cnn_metal.h"
 #include <time.h>
 #include <string.h>
 

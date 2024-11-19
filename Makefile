@@ -7,7 +7,7 @@ BUILD_DIR = build
 SRC_DIR = src
 
 # 소스 파일들
-SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/compare.cpp $(SRC_DIR)/cnn_opencl.mm
+SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/compare.cpp $(SRC_DIR)/cnn_metal.mm
 METAL_SRC = $(SRC_DIR)/shader.metal
 
 # 메탈 라이브러리
