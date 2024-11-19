@@ -223,5 +223,5 @@ void cnn(float* images, float* network, int* labels, float* confidences, int num
     }
     
     end = clock();
-    printf("Elapsed time: %.2f sec\n", (double)(end - start) / CLK_TCK);
+    printf("Elapsed time: %.2f sec\n", (double)(end - start) / CLOCKS_PER_SEC);
 }
