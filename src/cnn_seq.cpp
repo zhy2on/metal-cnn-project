@@ -1,12 +1,11 @@
 #pragma warning(disable : 4996)
-#include <direct.h>
 #include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <windows.h>
+#include <unistd.h>
 
 extern const char* CLASS_NAME[];
 
@@ -237,7 +236,7 @@ void cnn_seq(float* images, float* network, int* labels, float* confidences,
 		images += 32 * 32 * 3;
 	}
 	end = clock();
-	printf("Elapsed time: %.2f sec\n", (double)(end - start) / CLK_TCK);
+	printf("Elapsed time: %.2f sec\n", (double)(end - start) / CLOCKS_PER_SEC);
 
 	for (int i = 0; i < 21; ++i) {
 		free(layer[i]);
