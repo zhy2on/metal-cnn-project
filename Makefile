@@ -2,12 +2,12 @@
 CXX = clang++
 METAL = xcrun -sdk macosx metal
 METALLIB = xcrun -sdk macosx metallib
-CXXFLAGS = -framework Metal -framework Foundation -framework CoreGraphics
+CXXFLAGS = -framework Metal -framework Foundation -framework CoreGraphics -I./include
 BUILD_DIR = build
 SRC_DIR = src
 
 # 소스 파일들
-MAIN_SRC = $(SRC_DIR)/main.mm
+SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/compare.cpp $(SRC_DIR)/cnn_opencl.mm
 METAL_SRC = $(SRC_DIR)/shader.metal
 
 # 메탈 라이브러리
@@ -30,8 +30,8 @@ $(METAL_LIB): $(METAL_AIR)
 	$(METALLIB) $< -o $@
 
 # 최종 링크
-$(TARGET): $(METAL_LIB) $(MAIN_SRC)
-	$(CXX) $(MAIN_SRC) $(CXXFLAGS) -o $@
+$(TARGET): $(METAL_LIB) $(SRCS)
+	$(CXX) $(SRCS) $(CXXFLAGS) -o $@
 
 clean:
 	rm -rf $(BUILD_DIR)

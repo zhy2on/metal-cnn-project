@@ -1,39 +1,41 @@
-// shader.metal
 #include <metal_stdlib>
 using namespace metal;
 
-kernel void basic_convolution(
-    const device float* input [[buffer(0)]],     // 32x32 입력 이미지
-    device float* output [[buffer(1)]],          // 32x32 출력 이미지
-    const device float* filter [[buffer(2)]],    // 3x3 필터
-    const device float* bias [[buffer(3)]],      // 단일 bias 값
-    uint2 pos [[thread_position_in_grid]])       // 현재 스레드 위치
-{
-    const int size = 32;  // 이미지 크기
-    const int x = pos.x;
-    const int y = pos.y;
+kernel void convolution_kernel(
+    device const float* input [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    device const float* filter [[buffer(2)]],
+    device const float* bias [[buffer(3)]],
+    device const int* params [[buffer(4)]],
+    uint3 id [[thread_position_in_grid]]
+) {
+    const int outNeuron = id.z;
+    const int row = id.y;
+    const int col = id.x;
     
-    // 경계 체크
-    if (x >= size || y >= size) return;
+    const int inDim = params[0];
+    const int outDim = params[1];
+    const int nbyn = params[2];
+    const int offset = nbyn * nbyn;
     
     float sum = 0.0f;
     
-    // 3x3 필터 적용
-    for (int ky = 0; ky < 3; ky++) {
-        for (int kx = 0; kx < 3; kx++) {
-            int ix = x + kx - 1;
-            int iy = y + ky - 1;
-            
-            if (ix >= 0 && ix < size && iy >= 0 && iy < size) {
-                sum += input[iy * size + ix] * filter[ky * 3 + kx];
+    for (int inNeuron = 0; inNeuron < inDim; ++inNeuron) {
+        for (int fRow = 0; fRow < 3; ++fRow) {
+            for (int fCol = 0; fCol < 3; ++fCol) {
+                int x = col + fCol - 1;
+                int y = row + fRow - 1;
+                
+                if (x >= 0 && x < nbyn && y >= 0 && y < nbyn) {
+                    const int inputIdx = inNeuron * offset + y * nbyn + x;
+                    const int filterIdx = (outNeuron * inDim + inNeuron) * 9 + fRow * 3 + fCol;
+                    sum += input[inputIdx] * filter[filterIdx];
+                }
             }
         }
     }
     
-    // bias 더하고 ReLU 적용
-    sum += *bias;
-    sum = max(0.0f, sum);
-    
-    // 결과 저장
-    output[y * size + x] = sum;
+    const int outIdx = outNeuron * offset + row * nbyn + col;
+    sum += bias[outNeuron];
+    output[outIdx] = sum > 0.0f ? sum : 0.0f; // ReLU
 }

@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
 	float* confidences = (float*)malloc(sizeof(float) * num_of_image);
 
 	// cnn_seq(images, network, labels, confidences, num_of_image);
-	cnn(images, &network, labels, confidences, num_of_image);
+	cnn(images, network, labels, confidences, num_of_image);
 
 	int* labels_ans = (int*)readfile("labels.bin", sizeof(int) * num_of_image);
 	double acc = 0;
