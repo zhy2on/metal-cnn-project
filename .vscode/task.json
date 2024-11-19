@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build Metal shader",
+      "type": "shell",
+      "command": "xcrun -sdk macosx metal -c ${workspaceFolder}/src/shader.metal -o ${workspaceFolder}/build/shader.air && xcrun -sdk macosx metallib ${workspaceFolder}/build/shader.air -o ${workspaceFolder}/build/shader.metallib"
+    },
+    {
+      "label": "Build C++",
+      "type": "shell",
+      "command": "clang++ ${workspaceFolder}/src/main.cpp -framework Metal -framework Foundation -o ${workspaceFolder}/build/program"
+    }
+  ]
+}
