@@ -57,3 +57,42 @@ kernel void convolution_kernel(
     sum += bias[outNeuron];
     output[outIdx] = sum > 0.0f ? sum : 0.0f; // ReLU
 }
+
+kernel void max_pooling_kernel(
+    device const float* input [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    device const int* params [[buffer(2)]],
+    uint3 id [[thread_position_in_grid]]
+) {
+    const int col = id.x;     // x 출력 위치
+    const int row = id.y;     // y 출력 위치
+    const int channel = id.z; // 채널
+
+    const int inDim = params[0];    // 입력 채널 수
+    const int outNbyn = params[1];  // 출력 크기
+    const int inNbyn = outNbyn * 2; // 입력 크기 (출력의 2배)
+    
+    // 경계 체크
+    if (col >= outNbyn || row >= outNbyn || channel >= inDim)
+        return;
+
+    // 입력에서의 시작 위치 (2x2 영역의 좌상단)
+    const int inRow = row * 2;
+    const int inCol = col * 2;
+    
+    // 해당 채널의 시작 위치
+    const int channelOffset = channel * inNbyn * inNbyn;
+
+    // 2x2 영역에서 최댓값 찾기
+    float maxVal = 0.0f;
+    for (int dy = 0; dy < 2; dy++) {
+        for (int dx = 0; dx < 2; dx++) {
+            float val = input[channelOffset + (inRow + dy) * inNbyn + (inCol + dx)];
+            maxVal = max(val, maxVal);
+        }
+    }
+
+    // 결과 저장
+    const int outOffset = channel * outNbyn * outNbyn;
+    output[outOffset + row * outNbyn + col] = maxVal;
+}
