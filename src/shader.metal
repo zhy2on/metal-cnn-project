@@ -96,3 +96,33 @@ kernel void max_pooling_kernel(
     const int outOffset = channel * outNbyn * outNbyn;
     output[outOffset + row * outNbyn + col] = maxVal;
 }
+
+kernel void fc_layer_kernel(
+    device const float* input [[buffer(0)]],
+    device float* output [[buffer(1)]],
+    device const float* weights [[buffer(2)]],
+    device const float* biases [[buffer(3)]],
+    device const int* params [[buffer(4)]],
+    uint thread_position_in_grid [[thread_position_in_grid]]
+) {
+    // 파라미터 추출
+    const int inDim = params[0];  // 입력 뉴런 수
+    const int outDim = params[1]; // 출력 뉴런 수
+    
+    // 각 스레드가 하나의 출력 뉴런을 담당
+    const int outNeuron = thread_position_in_grid;
+    
+    // 경계 체크
+    if (outNeuron >= outDim)
+        return;
+        
+    // 해당 출력 뉴런에 대한 모든 입력의 가중합 계산
+    float sum = 0.0f;
+    for (int inNeuron = 0; inNeuron < inDim; ++inNeuron) {
+        sum += input[inNeuron] * weights[outNeuron * inDim + inNeuron];
+    }
+    
+    // 바이어스 추가 및 ReLU 활성화 함수 적용
+    sum += biases[outNeuron];
+    output[outNeuron] = sum > 0.0f ? sum : 0.0f;
+}
