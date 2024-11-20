@@ -11,19 +11,24 @@ extern const char* CLASS_NAME[];
 
 static void convolution(float* inputs, float* outputs, float* filter,
 						float* biases, int inDim, int outDim, int nbyn) {
+	// 출력 버퍼 초기화
 	memset(outputs, 0, nbyn * nbyn * outDim * sizeof(float));
 	int x = 0, y = 0;
 	int offset = nbyn * nbyn;
 	float sum = 0, temp;
 	float *input, *output;
 
+	// 각 출력 뉴런에 대해
 	for (int outNeuron = 0; outNeuron < outDim; ++outNeuron) {
 		input = inputs;
+		// 각 입력 채널에 대해
 		for (int inNeuron = 0; inNeuron < inDim; ++inNeuron) {
 			output = outputs;
+			// 각 픽셀 위치에 대해
 			for (int row = 0; row < nbyn; ++row) {
 				for (int col = 0; col < nbyn; ++col) {
 					sum = 0;
+					// 3x3 필터 연산
 					for (int fRow = 0; fRow < 3; ++fRow) {
 						for (int fCol = 0; fCol < 3; ++fCol) {
 							x = col + fCol - 1;
@@ -41,6 +46,7 @@ static void convolution(float* inputs, float* outputs, float* filter,
 			filter += 9;
 			input += offset;
 		}
+		// 바이어스 추가 및 ReLU
 		for (int i = 0; i < offset; ++i) {
 			(*outputs) = (*outputs) + (*biases);
 			if (*outputs < 0) (*outputs) = 0;  // ReLU

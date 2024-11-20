@@ -17,14 +17,17 @@ const int NBYN[] = {32, 32, 16, 16, 16, 8, 8, 8, 8, 4, 4, 4, 4, 2, 2, 2, 2, 1, 1
 
 void cnn_init() {
     @autoreleasepool {
+        // 1. GPU 디바이스 생성
         device = MTLCreateSystemDefaultDevice();
         if (!device) {
             fprintf(stderr, "Metal is not supported\n");
             return;
         }
         
+        // 2. 커맨드 큐 생성
         commandQueue = [device newCommandQueue];
         
+        // 3. Metal 라이브러리(셰이더 코드) 로드
         NSError* error = nil;
         NSURL *libraryURL = [NSURL fileURLWithPath:@"build/shader.metallib"];
 		library = [device newLibraryWithURL:libraryURL error:&error];
@@ -34,6 +37,7 @@ void cnn_init() {
             return;
         }
         
+        // 4. 컴퓨트 파이프라인 상태 생성
         id<MTLFunction> convFunction = [library newFunctionWithName:@"convolution_kernel"];
         convPipelineState = [device newComputePipelineStateWithFunction:convFunction error:&error];
         if (!convPipelineState) {
@@ -47,22 +51,27 @@ void cnn_init() {
 static void convolution_metal(float* inputs, float* outputs, float* filter, float* biases, 
                             int inDim, int outDim, int nbyn) {
     @autoreleasepool {
+        // 1. 입출력 버퍼 크기 계산
         NSUInteger inputSize = nbyn * nbyn * inDim * sizeof(float);
         NSUInteger outputSize = nbyn * nbyn * outDim * sizeof(float);
         NSUInteger filterSize = 3 * 3 * inDim * outDim * sizeof(float);
         NSUInteger biasSize = outDim * sizeof(float);
         
+        // 2. Metal 버퍼 생성
         id<MTLBuffer> inputBuffer = [device newBufferWithBytes:inputs length:inputSize options:MTLResourceStorageModeShared];
         id<MTLBuffer> outputBuffer = [device newBufferWithBytes:outputs length:outputSize options:MTLResourceStorageModeShared];
         id<MTLBuffer> filterBuffer = [device newBufferWithBytes:filter length:filterSize options:MTLResourceStorageModeShared];
         id<MTLBuffer> biasBuffer = [device newBufferWithBytes:biases length:biasSize options:MTLResourceStorageModeShared];
         
+        // 3. 파라미터 버퍼 생성
         int params[] = {inDim, outDim, nbyn};
         id<MTLBuffer> paramsBuffer = [device newBufferWithBytes:params length:sizeof(params) options:MTLResourceStorageModeShared];
         
+        // 4. 커맨드 버퍼와 인코더 생성
         id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
         id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
         
+        // 5. 커널 설정
         [encoder setComputePipelineState:convPipelineState];
         [encoder setBuffer:inputBuffer offset:0 atIndex:0];
         [encoder setBuffer:outputBuffer offset:0 atIndex:1];
@@ -70,15 +79,17 @@ static void convolution_metal(float* inputs, float* outputs, float* filter, floa
         [encoder setBuffer:biasBuffer offset:0 atIndex:3];
         [encoder setBuffer:paramsBuffer offset:0 atIndex:4];
         
+        // 6. 스레드 그룹 크기 설정
         MTLSize threadGroupSize = MTLSizeMake(8, 8, 1);
         MTLSize gridSize = MTLSizeMake(nbyn, nbyn, outDim);
         
+        // 7. GPU에서 실행
         [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
         [encoder endEncoding];
-        
         [commandBuffer commit];
         [commandBuffer waitUntilCompleted];
         
+        // 8. 결과 복사
         memcpy(outputs, outputBuffer.contents, outputSize);
     }
 }
