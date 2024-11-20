@@ -146,34 +146,68 @@ static void max_pooling_metal(float* input, float* output, int DIM, int nbyn) {
     }
 }
 
-// cnn_seq.cpp에서 가져온 나머지 함수들
-static void max_pooling(float* input, float* output, int DIM, int nbyn) {
-    float max, temp;
-    for (int n = 0; n < DIM; ++n) {
-        for (int row = 0; row < nbyn; row += 2) {
-            for (int col = 0; col < nbyn; col += 2) {
-                max = 0;
-                for (int y = 0; y < 2; ++y) {
-                    for (int x = 0; x < 2; ++x) {
-                        temp = input[nbyn * (row + y) + col + x];
-                        if (max < temp) max = temp;
-                    }
-                }
-                *(output++) = max;
-            }
-        }
-        input += nbyn * nbyn;
-    }
-}
-
-static void fc_layer(float* input, float* output, float* weights, float* biases, int inDim, int outDim) {
-    for (int outNeuron = 0; outNeuron < outDim; ++outNeuron) {
-        float sum = 0;
-        for (int inNeuron = 0; inNeuron < inDim; ++inNeuron) {
-            sum += input[inNeuron] * weights[outNeuron * inDim + inNeuron];
-        }
-        sum += biases[outNeuron];
-        output[outNeuron] = sum > 0 ? sum : 0;  // ReLU
+static void fc_layer_metal(float* input, float* output, float* weights, float* biases, int inDim, int outDim) {
+    @autoreleasepool {
+        // 버퍼 크기 계산
+        NSUInteger inputSize = inDim * sizeof(float);
+        NSUInteger outputSize = outDim * sizeof(float);
+        NSUInteger weightsSize = inDim * outDim * sizeof(float);
+        NSUInteger biasesSize = outDim * sizeof(float);
+        
+        // 파라미터 설정
+        int params[] = {inDim, outDim};
+        NSUInteger paramsSize = sizeof(params);
+        
+        // Metal 버퍼 생성
+        id<MTLBuffer> inputBuffer = [device newBufferWithBytes:input 
+                                                      length:inputSize 
+                                                     options:MTLResourceStorageModeShared];
+        id<MTLBuffer> outputBuffer = [device newBufferWithBytes:output 
+                                                       length:outputSize 
+                                                      options:MTLResourceStorageModeShared];
+        id<MTLBuffer> weightsBuffer = [device newBufferWithBytes:weights 
+                                                        length:weightsSize 
+                                                       options:MTLResourceStorageModeShared];
+        id<MTLBuffer> biasesBuffer = [device newBufferWithBytes:biases 
+                                                       length:biasesSize 
+                                                      options:MTLResourceStorageModeShared];
+        id<MTLBuffer> paramsBuffer = [device newBufferWithBytes:params 
+                                                       length:paramsSize 
+                                                      options:MTLResourceStorageModeShared];
+        
+        // 커맨드 버퍼와 인코더 생성
+        id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
+        id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+        
+        // FC layer 커널용 파이프라인 상태 설정
+        id<MTLFunction> fcFunction = [library newFunctionWithName:@"fc_layer_kernel"];
+        id<MTLComputePipelineState> fcPipelineState = [device newComputePipelineStateWithFunction:fcFunction error:nil];
+        [encoder setComputePipelineState:fcPipelineState];
+        
+        // 버퍼 설정
+        [encoder setBuffer:inputBuffer offset:0 atIndex:0];
+        [encoder setBuffer:outputBuffer offset:0 atIndex:1];
+        [encoder setBuffer:weightsBuffer offset:0 atIndex:2];
+        [encoder setBuffer:biasesBuffer offset:0 atIndex:3];
+        [encoder setBuffer:paramsBuffer offset:0 atIndex:4];
+        
+        // 스레드 구성 (1차원)
+        NSUInteger threadGroupSize = fcPipelineState.maxTotalThreadsPerThreadgroup;
+        if (threadGroupSize > outDim) threadGroupSize = outDim;
+        
+        MTLSize threadsPerGroup = MTLSizeMake(threadGroupSize, 1, 1);
+        MTLSize gridSize = MTLSizeMake(outDim, 1, 1);
+        
+        // 커널 실행
+        [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadsPerGroup];
+        [encoder endEncoding];
+        
+        // 실행 및 완료 대기
+        [commandBuffer commit];
+        [commandBuffer waitUntilCompleted];
+        
+        // 결과 복사
+        memcpy(output, outputBuffer.contents, outputSize);
     }
 }
 
@@ -269,9 +303,9 @@ void cnn(float* images, float* network, int* labels, float* confidences, int num
         convolution_metal(layer[15], layer[16], w[16], b[16], INPUT_DIM[16], OUTPUT_DIM[16], NBYN[16]);
         max_pooling_metal(layer[16], layer[17], INPUT_DIM[17], NBYN[17] * 2);
         
-        fc_layer(layer[17], layer[18], w[18], b[18], INPUT_DIM[18], OUTPUT_DIM[18]);
-        fc_layer(layer[18], layer[19], w[19], b[19], INPUT_DIM[19], OUTPUT_DIM[19]);
-        fc_layer(layer[19], layer[20], w[20], b[20], INPUT_DIM[20], OUTPUT_DIM[20]);
+        fc_layer_metal(layer[17], layer[18], w[18], b[18], INPUT_DIM[18], OUTPUT_DIM[18]);
+        fc_layer_metal(layer[18], layer[19], w[19], b[19], INPUT_DIM[19], OUTPUT_DIM[19]);
+        fc_layer_metal(layer[19], layer[20], w[20], b[20], INPUT_DIM[20], OUTPUT_DIM[20]);
         
         softmax(layer[20], 10);
         
