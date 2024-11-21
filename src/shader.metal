@@ -2,127 +2,176 @@
 #include <metal_stdlib>
 using namespace metal;
 
+constant int BATCH_SIZE = 64;
+constant int TILE_SIZE = 16;
+
 kernel void convolution_kernel(
     device const float* input [[buffer(0)]],
     device float* output [[buffer(1)]],
-    device const float* filter [[buffer(2)]],
-    device const float* bias [[buffer(3)]],
-    device const int* params [[buffer(4)]],
-    uint3 id [[thread_position_in_grid]]
+    device const float* network [[buffer(2)]],
+    device const int* params [[buffer(3)]],
+    uint3 tid [[thread_position_in_grid]],
+    uint3 lid [[thread_position_in_threadgroup]]
 ) {
-    // 각 스레드는 하나의 출력 픽셀을 담당
-    const int outNeuron = id.z; // 출력 채널 (0 ~ outDim-1)
-    const int row = id.y; // y 위치 (0 ~ nbyn-1)
-    const int col = id.x; // x 위치 (0 ~ nbyn-1)
+    const int inDim = params[0];
+    const int outDim = params[1];
+    const int nbyn = params[2];
+    const int imageOffset = params[3];
+    const int networkOffset = params[4];
     
-    // params에서 설정값 읽기
-    const int inDim = params[0]; // 입력 채널 수
-    const int outDim = params[1]; // 출력 채널 수
-    const int nbyn = params[2]; // 이미지 크기
-    const int offset = nbyn * nbyn;
+    // threadgroup memory (with padding)
+    threadgroup float tile[TILE_SIZE + 2][TILE_SIZE + 2];
     
+    const int col = tid.x;
+    const int row = tid.y;
+    const int batch_outNeuron = tid.z;
+    const int batch = batch_outNeuron / outDim;
+    const int outNeuron = batch_outNeuron % outDim;
+    
+    if (row >= nbyn || col >= nbyn || batch >= BATCH_SIZE || outNeuron >= outDim) {
+        return;
+    }
+    
+    const int local_x = lid.x;
+    const int local_y = lid.y;
+    
+    const int batchOffset = batch * inDim * nbyn * nbyn;
     float sum = 0.0f;
     
-    // 각 입력 채널에 대해
+    const device float* filters = network + networkOffset;
+    const device float* biases = filters + 3 * 3 * inDim * outDim;
+    
+    // Load input data into the tile
     for (int inNeuron = 0; inNeuron < inDim; ++inNeuron) {
-        // 3x3 필터 연산
-        for (int fRow = 0; fRow < 3; ++fRow) {
-            for (int fCol = 0; fCol < 3; ++fCol) {
-                // 입력 위치 계산
-                int x = col + fCol - 1; // -1은 패딩
-                int y = row + fRow - 1;
-                
-                // 이미지 경계 체크
-                if (x >= 0 && x < nbyn && y >= 0 && y < nbyn) {
-                    // 입력 데이터 인덱스:
-                    // (입력채널 * 이미지크기^2) + (y * 이미지폭) + x
-                    const int inputIdx = inNeuron * offset + y * nbyn + x;
-
-                    // 필터 가중치 인덱스:
-                    // (출력채널 * 입력채널 * 9) + (필터행 * 3) + 필터열
-                    const int filterIdx = (outNeuron * inDim + inNeuron) * 9 + fRow * 3 + fCol;
-
-                    // 컨볼루션 연산 누적
-                    sum += input[inputIdx] * filter[filterIdx];
+        // Load main tile data
+        tile[local_y + 1][local_x + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + row * nbyn + col];
+        
+        // Load padding area data
+        if (local_y == 0 && row > 0) {
+            tile[0][local_x + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row - 1) * nbyn + col];
+        }
+        if (local_y == TILE_SIZE - 1 && row < nbyn - 1) {
+            tile[TILE_SIZE + 1][local_x + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row + 1) * nbyn + col];
+        }
+        if (local_x == 0 && col > 0) {
+            tile[local_y + 1][0] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + row * nbyn + (col - 1)];
+        }
+        if (local_x == TILE_SIZE - 1 && col < nbyn - 1) {
+            tile[local_y + 1][TILE_SIZE + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + row * nbyn + (col + 1)];
+        }
+        
+        // Load corner area data
+        if (local_x == 0 && local_y == 0) {
+            if (row > 0 && col > 0) {
+                tile[0][0] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row - 1) * nbyn + (col - 1)];
+            }
+        }
+        if (local_x == TILE_SIZE - 1 && local_y == 0) {
+            if (row > 0 && col < nbyn - 1) {
+                tile[0][TILE_SIZE + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row - 1) * nbyn + (col + 1)];
+            }
+        }
+        if (local_x == 0 && local_y == TILE_SIZE - 1) {
+            if (row < nbyn - 1 && col > 0) {
+                tile[TILE_SIZE + 1][0] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row + 1) * nbyn + (col - 1)];
+            }
+        }
+        if (local_x == TILE_SIZE - 1 && local_y == TILE_SIZE - 1) {
+            if (row < nbyn - 1 && col < nbyn - 1) {
+                tile[TILE_SIZE + 1][TILE_SIZE + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row + 1) * nbyn + (col + 1)];
+            }
+        }
+        
+        // Synchronize the threadgroup after loading the tile data
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        
+        // Perform convolution
+        const device float* filter = filters + (outNeuron * inDim + inNeuron) * 9;
+        for (int i = 0; i < 3; ++i) {
+            int y = row + i - 1;
+            if (y >= 0 && y < nbyn) {
+                for (int j = 0; j < 3; ++j) {
+                    int x = col + j - 1;
+                    if (x >= 0 && x < nbyn) {
+                        sum += tile[local_y + i][local_x + j] * filter[i * 3 + j];
+                    }
                 }
             }
         }
+        
+        // Synchronize the threadgroup after the convolution
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     
-    // 출력 인덱스:
-    // (출력채널 * 이미지크기^2) + (행 * 이미지폭) + 열
-    const int outIdx = outNeuron * offset + row * nbyn + col;
-
-    // 바이어스 추가 및 ReLU 활성화 함수 적용
-    sum += bias[outNeuron];
-    output[outIdx] = sum > 0.0f ? sum : 0.0f; // ReLU
+    // Apply ReLU activation and store the result
+    sum += biases[outNeuron];
+    sum = max(0.0f, sum);
+    const int outputOffset = batch * outDim * nbyn * nbyn;
+    output[outputOffset + outNeuron * nbyn * nbyn + row * nbyn + col] = sum;
 }
 
 kernel void max_pooling_kernel(
     device const float* input [[buffer(0)]],
     device float* output [[buffer(1)]],
     device const int* params [[buffer(2)]],
-    uint3 id [[thread_position_in_grid]]
+    uint3 tid [[thread_position_in_grid]]
 ) {
-    const int col = id.x;     // x 출력 위치
-    const int row = id.y;     // y 출력 위치
-    const int channel = id.z; // 채널
-
-    const int inDim = params[0];    // 입력 채널 수
-    const int outNbyn = params[1];  // 출력 크기
-    const int inNbyn = outNbyn * 2; // 입력 크기 (출력의 2배)
+    const int DIM = params[0];
+    const int outNbyn = params[1];
     
-    // 경계 체크
-    if (col >= outNbyn || row >= outNbyn || channel >= inDim)
+    const int n = tid.x;
+    const int idx = tid.y;
+    const int batch = tid.z;
+    
+    if (batch >= BATCH_SIZE || n >= DIM || idx >= outNbyn * outNbyn) {
         return;
-
-    // 입력에서의 시작 위치 (2x2 영역의 좌상단)
+    }
+    
+    const int inNbyn = outNbyn * 2;
+    
+    const int row = idx / outNbyn;
+    const int col = idx % outNbyn;
+    
     const int inRow = row * 2;
     const int inCol = col * 2;
     
-    // 해당 채널의 시작 위치
-    const int channelOffset = channel * inNbyn * inNbyn;
-
-    // 2x2 영역에서 최댓값 찾기
-    float maxVal = 0.0f;
-    for (int dy = 0; dy < 2; dy++) {
-        for (int dx = 0; dx < 2; dx++) {
-            float val = input[channelOffset + (inRow + dy) * inNbyn + (inCol + dx)];
-            maxVal = max(val, maxVal);
-        }
-    }
-
-    // 결과 저장
-    const int outOffset = channel * outNbyn * outNbyn;
-    output[outOffset + row * outNbyn + col] = maxVal;
+    const int input_offset = batch * DIM * inNbyn * inNbyn;
+    const int output_offset = batch * DIM * outNbyn * outNbyn;
+    
+    float maxVal = input[input_offset + n * inNbyn * inNbyn + inRow * inNbyn + inCol];
+    maxVal = max(maxVal, input[input_offset + n * inNbyn * inNbyn + inRow * inNbyn + inCol + 1]);
+    maxVal = max(maxVal, input[input_offset + n * inNbyn * inNbyn + (inRow + 1) * inNbyn + inCol]);
+    maxVal = max(maxVal, input[input_offset + n * inNbyn * inNbyn + (inRow + 1) * inNbyn + inCol + 1]);
+    
+    output[output_offset + n * outNbyn * outNbyn + row * outNbyn + col] = maxVal;
 }
 
 kernel void fc_layer_kernel(
     device const float* input [[buffer(0)]],
     device float* output [[buffer(1)]],
-    device const float* weights [[buffer(2)]],
-    device const float* biases [[buffer(3)]],
-    device const int* params [[buffer(4)]],
-    uint thread_position_in_grid [[thread_position_in_grid]]
+    device const float* network [[buffer(2)]],
+    device const int* params [[buffer(3)]],
+    uint2 tid [[thread_position_in_grid]]
 ) {
-    // 파라미터 추출
-    const int inDim = params[0];  // 입력 뉴런 수
-    const int outDim = params[1]; // 출력 뉴런 수
+    const int inDim = params[0];
+    const int outDim = params[1];
+    const int networkOffset = params[2];
     
-    // 각 스레드가 하나의 출력 뉴런을 담당
-    const int outNeuron = thread_position_in_grid;
+    const int outIdx = tid.x;
+    const int batch = tid.y;
     
-    // 경계 체크
-    if (outNeuron >= outDim)
+    if (outIdx >= outDim || batch >= BATCH_SIZE) {
         return;
-        
-    // 해당 출력 뉴런에 대한 모든 입력의 가중합 계산
-    float sum = 0.0f;
-    for (int inNeuron = 0; inNeuron < inDim; ++inNeuron) {
-        sum += input[inNeuron] * weights[outNeuron * inDim + inNeuron];
     }
     
-    // 바이어스 추가 및 ReLU 활성화 함수 적용
-    sum += biases[outNeuron];
-    output[outNeuron] = sum > 0.0f ? sum : 0.0f;
+    const device float* weights = network + networkOffset;
+    const device float* biases = weights + inDim * outDim;
+    
+    float sum = 0.0f;
+    for (int inIdx = 0; inIdx < inDim; ++inIdx) {
+        sum += input[batch * inDim + inIdx] * weights[outIdx * inDim + inIdx];
+    }
+    
+    sum += biases[outIdx];
+    output[batch * outDim + outIdx] = max(0.0f, sum);  // ReLU activation
 }
