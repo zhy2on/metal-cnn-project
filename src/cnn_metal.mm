@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "cnn_metal.h"
+#include <sys/time.h>
 #include <time.h>
 #include <string.h>
 
@@ -82,7 +83,7 @@ static void convolution_metal(id<MTLBuffer> input, id<MTLBuffer> output, id<MTLB
         [encoder setBuffer:paramsBuffer offset:0 atIndex:3];
         
         MTLSize threadGroupSize = MTLSizeMake(8, 8, 1);
-        MTLSize gridSize = MTLSizeMake(nbyn, nbyn, outDim * BATCH_SIZE);
+        MTLSize gridSize = MTLSizeMake(nbyn * nbyn, outDim, BATCH_SIZE);
         
         [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
         [encoder endEncoding];
@@ -172,8 +173,8 @@ static int find_max(float* input, int classNum) {
 }
 
 void cnn(float* images, float* network, int* labels, float* confidences, int num_of_image) {
-    time_t start, end;
-    start = clock();
+    struct timeval start_time, end_time;
+    gettimeofday(&start_time, NULL);
     
     cnn_init();
     
@@ -385,6 +386,7 @@ void cnn(float* images, float* network, int* labels, float* confidences, int num
     free(result);
 }
     
-    end = clock();
-    printf("Elapsed time: %.2f sec\n", (double)(end - start) / CLOCKS_PER_SEC);
+    gettimeofday(&end_time, NULL);
+    double elapsed_time = (end_time.tv_sec - start_time.tv_sec) + (end_time.tv_usec - start_time.tv_usec) / 1000000.0;
+    printf("Elapsed time: %.6f seconds\n", elapsed_time);
 }
