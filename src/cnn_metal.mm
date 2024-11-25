@@ -30,12 +30,12 @@ static MetalBuffers buffers;
 
 // 내부 함수 선언
 static void init_metal_buffers(float* images, float* network, int num_of_image);
-static void convolution_metal(id<MTLBuffer> input, id<MTLBuffer> output, 
-                            id<MTLBuffer> network, int inDim, int outDim, int nbyn, 
-                            int imageOffset, int networkOffset);
-static void max_pooling_metal(id<MTLBuffer> input, id<MTLBuffer> output, 
+static void convolution_metal(id<MTLCommandBuffer> commandBuffer, 
+                            id<MTLBuffer> input, id<MTLBuffer> output, id<MTLBuffer> network,
+                            int inDim, int outDim, int nbyn, int imageOffset, int networkOffset);
+static void max_pooling_metal(id<MTLCommandBuffer> commandBuffer, id<MTLBuffer> input, id<MTLBuffer> output, 
                             int DIM, int nbyn);
-static void fc_layer_metal(id<MTLBuffer> input, id<MTLBuffer> output, 
+static void fc_layer_metal(id<MTLCommandBuffer> commandBuffer, id<MTLBuffer> input, id<MTLBuffer> output, 
                           id<MTLBuffer> network, int inDim, int outDim, int networkOffset);
 
 static void process_single_batch(int image_offset, int* labels, float* confidences,
@@ -73,83 +73,72 @@ static void init_metal_buffers(float* images, float* network, int num_of_image) 
                                                       options:MTLResourceStorageModeShared];
 }
 
-static void convolution_metal(id<MTLBuffer> input, id<MTLBuffer> output, id<MTLBuffer> network,
+static void convolution_metal(id<MTLCommandBuffer> commandBuffer, 
+                            id<MTLBuffer> input, id<MTLBuffer> output, id<MTLBuffer> network,
                             int inDim, int outDim, int nbyn, int imageOffset, int networkOffset) {
-    @autoreleasepool {
-        id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
-        id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-        
-        int params[] = {inDim, outDim, nbyn, imageOffset, networkOffset};
-        id<MTLBuffer> paramsBuffer = [device newBufferWithBytes:params 
-                                                       length:sizeof(params) 
-                                                      options:MTLResourceStorageModeShared];
-        
-        [encoder setComputePipelineState:convPipelineState];
-        [encoder setBuffer:input offset:0 atIndex:0];
-        [encoder setBuffer:output offset:0 atIndex:1];
-        [encoder setBuffer:network offset:0 atIndex:2];
-        [encoder setBuffer:paramsBuffer offset:0 atIndex:3];
-        
-        MTLSize threadGroupSize = MTLSizeMake(8, 8, 1);
-        MTLSize gridSize = MTLSizeMake(nbyn * nbyn, outDim, BATCH_SIZE);
-        
-        [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
-        [encoder endEncoding];
-        [commandBuffer commit];
-        [commandBuffer waitUntilCompleted];
-    }
+    id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+    
+    int params[] = {inDim, outDim, nbyn, imageOffset, networkOffset};
+    id<MTLBuffer> paramsBuffer = [device newBufferWithBytes:params 
+                                                   length:sizeof(params) 
+                                                  options:MTLResourceStorageModeShared];
+    
+    [encoder setComputePipelineState:convPipelineState];
+    [encoder setBuffer:input offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBuffer:network offset:0 atIndex:2];
+    [encoder setBuffer:paramsBuffer offset:0 atIndex:3];
+    
+    MTLSize threadGroupSize = MTLSizeMake(8, 8, 1);
+    MTLSize gridSize = MTLSizeMake(nbyn * nbyn, outDim, BATCH_SIZE);
+    
+    [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
+    [encoder endEncoding];
 }
 
-static void max_pooling_metal(id<MTLBuffer> input, id<MTLBuffer> output, int DIM, int nbyn) {
-    @autoreleasepool {
-        id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
-        id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-        
-        int params[] = {DIM, nbyn/2};
-        id<MTLBuffer> paramsBuffer = [device newBufferWithBytes:params 
-                                                       length:sizeof(params) 
-                                                      options:MTLResourceStorageModeShared];
-        
-        [encoder setComputePipelineState:poolPipelineState];
-        [encoder setBuffer:input offset:0 atIndex:0];
-        [encoder setBuffer:output offset:0 atIndex:1];
-        [encoder setBuffer:paramsBuffer offset:0 atIndex:2];
-        
-        MTLSize threadGroupSize = MTLSizeMake(8, 8, 1);
-        MTLSize gridSize = MTLSizeMake(DIM, nbyn/2 * nbyn/2, BATCH_SIZE);
-        
-        [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
-        [encoder endEncoding];
-        [commandBuffer commit];
-        [commandBuffer waitUntilCompleted];
-    }
+static void max_pooling_metal(id<MTLCommandBuffer> commandBuffer,
+                            id<MTLBuffer> input, id<MTLBuffer> output, 
+                            int DIM, int nbyn) {
+    id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+    
+    int params[] = {DIM, nbyn/2};
+    id<MTLBuffer> paramsBuffer = [device newBufferWithBytes:params 
+                                                   length:sizeof(params) 
+                                                  options:MTLResourceStorageModeShared];
+    
+    [encoder setComputePipelineState:poolPipelineState];
+    [encoder setBuffer:input offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBuffer:paramsBuffer offset:0 atIndex:2];
+    
+    MTLSize threadGroupSize = MTLSizeMake(8, 8, 1);
+    MTLSize gridSize = MTLSizeMake(DIM, nbyn/2 * nbyn/2, BATCH_SIZE);
+    
+    [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
+    [encoder endEncoding];
 }
 
-static void fc_layer_metal(id<MTLBuffer> input, id<MTLBuffer> output, id<MTLBuffer> network,
+static void fc_layer_metal(id<MTLCommandBuffer> commandBuffer,
+                          id<MTLBuffer> input, id<MTLBuffer> output, id<MTLBuffer> network,
                           int inDim, int outDim, int networkOffset) {
-    @autoreleasepool {
-        id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
-        id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-        
-        int params[] = {inDim, outDim, networkOffset};
-        id<MTLBuffer> paramsBuffer = [device newBufferWithBytes:params 
-                                                       length:sizeof(params) 
-                                                      options:MTLResourceStorageModeShared];
-        
-        [encoder setComputePipelineState:fcPipelineState];
-        [encoder setBuffer:input offset:0 atIndex:0];
-        [encoder setBuffer:output offset:0 atIndex:1];
-        [encoder setBuffer:network offset:0 atIndex:2];
-        [encoder setBuffer:paramsBuffer offset:0 atIndex:3];
-        
-        MTLSize threadGroupSize = MTLSizeMake(MIN((int)fcPipelineState.maxTotalThreadsPerThreadgroup, outDim), 1, 1);
-        MTLSize gridSize = MTLSizeMake(outDim, BATCH_SIZE, 1);
-
-        [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
-        [encoder endEncoding];
-        [commandBuffer commit];
-        [commandBuffer waitUntilCompleted];
-    }
+    id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+    
+    int params[] = {inDim, outDim, networkOffset};
+    id<MTLBuffer> paramsBuffer = [device newBufferWithBytes:params 
+                                                   length:sizeof(params) 
+                                                  options:MTLResourceStorageModeShared];
+    
+    [encoder setComputePipelineState:fcPipelineState];
+    [encoder setBuffer:input offset:0 atIndex:0];
+    [encoder setBuffer:output offset:0 atIndex:1];
+    [encoder setBuffer:network offset:0 atIndex:2];
+    [encoder setBuffer:paramsBuffer offset:0 atIndex:3];
+    
+    MTLSize threadGroupSize = MTLSizeMake(MIN((int)fcPipelineState.maxTotalThreadsPerThreadgroup, outDim), 1, 1);
+    MTLSize gridSize = MTLSizeMake(outDim, BATCH_SIZE, 1);
+    
+    [encoder dispatchThreads:gridSize threadsPerThreadgroup:threadGroupSize];
+    [encoder endEncoding];
 }
 
 static void softmax(float* input, int N) {
@@ -182,87 +171,91 @@ static int find_max(float* input, int classNum) {
 
 static void process_single_batch(int image_offset, int* labels, float* confidences,
                                int batch_index, int batch_size) {
+	id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
     int network_offset = 0;
     
     // Conv block 1
-    convolution_metal(buffers.imageBuffer, buffers.convBuffer1, buffers.networkBuffer, 
+    convolution_metal(commandBuffer, buffers.imageBuffer, buffers.convBuffer1, buffers.networkBuffer, 
                     INPUT_DIM[0], OUTPUT_DIM[0], NBYN[0], image_offset, network_offset);
     network_offset += NETWORK_OFFSETS[0];
     
-    convolution_metal(buffers.convBuffer1, buffers.convBuffer2, buffers.networkBuffer, 
+    convolution_metal(commandBuffer, buffers.convBuffer1, buffers.convBuffer2, buffers.networkBuffer, 
                     INPUT_DIM[1], OUTPUT_DIM[1], NBYN[1], 0, network_offset);
     network_offset += NETWORK_OFFSETS[1];
     
-    max_pooling_metal(buffers.convBuffer2, buffers.poolBuffer, INPUT_DIM[2], NBYN[2] * 2);
+    max_pooling_metal(commandBuffer, buffers.convBuffer2, buffers.poolBuffer, INPUT_DIM[2], NBYN[2] * 2);
     
     // Conv block 2
-    convolution_metal(buffers.poolBuffer, buffers.convBuffer1, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.poolBuffer, buffers.convBuffer1, buffers.networkBuffer,
                     INPUT_DIM[3], OUTPUT_DIM[3], NBYN[3], 0, network_offset);
     network_offset += NETWORK_OFFSETS[2];
     
-    convolution_metal(buffers.convBuffer1, buffers.convBuffer2, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.convBuffer1, buffers.convBuffer2, buffers.networkBuffer,
                     INPUT_DIM[4], OUTPUT_DIM[4], NBYN[4], 0, network_offset);
     network_offset += NETWORK_OFFSETS[3];
     
-    max_pooling_metal(buffers.convBuffer2, buffers.poolBuffer, INPUT_DIM[5], NBYN[5] * 2);
+    max_pooling_metal(commandBuffer, buffers.convBuffer2, buffers.poolBuffer, INPUT_DIM[5], NBYN[5] * 2);
     
     // Conv block 3
-    convolution_metal(buffers.poolBuffer, buffers.convBuffer1, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.poolBuffer, buffers.convBuffer1, buffers.networkBuffer,
                     INPUT_DIM[6], OUTPUT_DIM[6], NBYN[6], 0, network_offset);
     network_offset += NETWORK_OFFSETS[4];
     
-    convolution_metal(buffers.convBuffer1, buffers.convBuffer2, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.convBuffer1, buffers.convBuffer2, buffers.networkBuffer,
                     INPUT_DIM[7], OUTPUT_DIM[7], NBYN[7], 0, network_offset);
     network_offset += NETWORK_OFFSETS[5];
     
-    convolution_metal(buffers.convBuffer2, buffers.convBuffer1, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.convBuffer2, buffers.convBuffer1, buffers.networkBuffer,
                     INPUT_DIM[8], OUTPUT_DIM[8], NBYN[8], 0, network_offset);
     network_offset += NETWORK_OFFSETS[6];
     
-    max_pooling_metal(buffers.convBuffer1, buffers.poolBuffer, INPUT_DIM[9], NBYN[9] * 2);
+    max_pooling_metal(commandBuffer, buffers.convBuffer1, buffers.poolBuffer, INPUT_DIM[9], NBYN[9] * 2);
     
     // Conv block 4
-    convolution_metal(buffers.poolBuffer, buffers.convBuffer1, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.poolBuffer, buffers.convBuffer1, buffers.networkBuffer,
                         INPUT_DIM[10], OUTPUT_DIM[10], NBYN[10], 0, network_offset);
     network_offset += NETWORK_OFFSETS[7];
     
-    convolution_metal(buffers.convBuffer1, buffers.convBuffer2, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.convBuffer1, buffers.convBuffer2, buffers.networkBuffer,
                         INPUT_DIM[11], OUTPUT_DIM[11], NBYN[11], 0, network_offset);
     network_offset += NETWORK_OFFSETS[8];
     
-    convolution_metal(buffers.convBuffer2, buffers.convBuffer1, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.convBuffer2, buffers.convBuffer1, buffers.networkBuffer,
                         INPUT_DIM[12], OUTPUT_DIM[12], NBYN[12], 0, network_offset);
     network_offset += NETWORK_OFFSETS[9];
     
-    max_pooling_metal(buffers.convBuffer1, buffers.poolBuffer, INPUT_DIM[13], NBYN[13] * 2);
+    max_pooling_metal(commandBuffer, buffers.convBuffer1, buffers.poolBuffer, INPUT_DIM[13], NBYN[13] * 2);
     
     // Conv block 5
-    convolution_metal(buffers.poolBuffer, buffers.convBuffer1, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.poolBuffer, buffers.convBuffer1, buffers.networkBuffer,
                         INPUT_DIM[14], OUTPUT_DIM[14], NBYN[14], 0, network_offset);
     network_offset += NETWORK_OFFSETS[10];
     
-    convolution_metal(buffers.convBuffer1, buffers.convBuffer2, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.convBuffer1, buffers.convBuffer2, buffers.networkBuffer,
                         INPUT_DIM[15], OUTPUT_DIM[15], NBYN[15], 0, network_offset);
     network_offset += NETWORK_OFFSETS[11];
     
-    convolution_metal(buffers.convBuffer2, buffers.convBuffer1, buffers.networkBuffer,
+    convolution_metal(commandBuffer, buffers.convBuffer2, buffers.convBuffer1, buffers.networkBuffer,
                         INPUT_DIM[16], OUTPUT_DIM[16], NBYN[16], 0, network_offset);
     network_offset += NETWORK_OFFSETS[12];
     
-    max_pooling_metal(buffers.convBuffer1, buffers.poolBuffer, INPUT_DIM[17], NBYN[17] * 2);
+    max_pooling_metal(commandBuffer, buffers.convBuffer1, buffers.poolBuffer, INPUT_DIM[17], NBYN[17] * 2);
     
     // Fully connected layers
-    fc_layer_metal(buffers.poolBuffer, buffers.fcOutputBuffer, buffers.networkBuffer,
+    fc_layer_metal(commandBuffer, buffers.poolBuffer, buffers.fcOutputBuffer, buffers.networkBuffer,
                         INPUT_DIM[18], OUTPUT_DIM[18], network_offset);
     network_offset += NETWORK_OFFSETS[13];
     
-    fc_layer_metal(buffers.fcOutputBuffer, buffers.fcInputBuffer, buffers.networkBuffer,
+    fc_layer_metal(commandBuffer, buffers.fcOutputBuffer, buffers.fcInputBuffer, buffers.networkBuffer,
                         INPUT_DIM[19], OUTPUT_DIM[19], network_offset);
     network_offset += NETWORK_OFFSETS[14];
     
-    fc_layer_metal(buffers.fcInputBuffer, buffers.resultBuffer, buffers.networkBuffer,
+    fc_layer_metal(commandBuffer, buffers.fcInputBuffer, buffers.resultBuffer, buffers.networkBuffer,
                         INPUT_DIM[20], OUTPUT_DIM[20], network_offset);
     
+	[commandBuffer commit];
+	[commandBuffer waitUntilCompleted];
+
     // 결과 처리
     float* result_ptr = (float*)buffers.resultBuffer.contents;
     for (int j = 0; j < batch_size; ++j) {
