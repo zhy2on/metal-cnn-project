@@ -17,53 +17,57 @@ kernel void convolution_kernel(
     const int imageOffset = params[3];
     const int networkOffset = params[4];
     
-    // OpenCL 버전과 동일한 인덱싱 방식 적용
     const int idx = tid.x;
     const int outNeuron = tid.y;
     const int batch = tid.z;
     
+    if (outNeuron >= outDim || batch >= BATCH_SIZE) return;
+    
     const int row = idx / nbyn;
     const int col = idx % nbyn;
     
-    if (row >= nbyn || col >= nbyn || outNeuron >= outDim || batch >= BATCH_SIZE) {
-        return;
-    }
+    if (row >= nbyn || col >= nbyn) return;
     
-    float sum = 0.0f;
     const device float* filters = network + networkOffset;
     const device float* biases = filters + 3 * 3 * inDim * outDim;
+    float sum = 0.0f;
+    
+    const int batch_offset = batch * inDim * nbyn * nbyn;
+    const int filter_offset = outNeuron * inDim * 9;
+    
+    const int center_idx = row * nbyn + col;
+    const int top_idx = ((row > 0) ? (row-1) : row) * nbyn + col;
+    const int bottom_idx = ((row < nbyn-1) ? (row+1) : row) * nbyn + col;
     
     for (int inNeuron = 0; inNeuron < inDim; ++inNeuron) {
-        const device float* currentInput = input + imageOffset + batch * inDim * nbyn * nbyn + inNeuron * nbyn * nbyn;
-        const device float* filter = filters + (outNeuron * inDim + inNeuron) * 9;
+        const device float* currentInput = input + imageOffset + batch_offset + inNeuron * nbyn * nbyn;
+        const device float* filter = filters + filter_offset + inNeuron * 9;
         
-        int x0 = col - 1, x1 = col, x2 = col + 1;
-        int y0 = row - 1, y1 = row, y2 = row + 1;
+        // Center row
+        const float center = currentInput[center_idx];
+        const float left = (col > 0) ? currentInput[center_idx - 1] : 0;
+        const float right = (col < nbyn-1) ? currentInput[center_idx + 1] : 0;
         
-        if (y0 >= 0 && y0 < nbyn) {
-            if (x0 >= 0 && x0 < nbyn) sum += currentInput[y0 * nbyn + x0] * filter[0];
-            if (x1 >= 0 && x1 < nbyn) sum += currentInput[y0 * nbyn + x1] * filter[1];
-            if (x2 >= 0 && x2 < nbyn) sum += currentInput[y0 * nbyn + x2] * filter[2];
-        }
+        // Top row
+        const float top = (row > 0) ? currentInput[top_idx] : 0;
+        const float topLeft = (row > 0 && col > 0) ? currentInput[top_idx - 1] : 0;
+        const float topRight = (row > 0 && col < nbyn-1) ? currentInput[top_idx + 1] : 0;
         
-        if (y1 >= 0 && y1 < nbyn) {
-            if (x0 >= 0 && x0 < nbyn) sum += currentInput[y1 * nbyn + x0] * filter[3];
-            if (x1 >= 0 && x1 < nbyn) sum += currentInput[y1 * nbyn + x1] * filter[4];
-            if (x2 >= 0 && x2 < nbyn) sum += currentInput[y1 * nbyn + x2] * filter[5];
-        }
+        // Bottom row
+        const float bottom = (row < nbyn-1) ? currentInput[bottom_idx] : 0;
+        const float bottomLeft = (row < nbyn-1 && col > 0) ? currentInput[bottom_idx - 1] : 0;
+        const float bottomRight = (row < nbyn-1 && col < nbyn-1) ? currentInput[bottom_idx + 1] : 0;
         
-        if (y2 >= 0 && y2 < nbyn) {
-            if (x0 >= 0 && x0 < nbyn) sum += currentInput[y2 * nbyn + x0] * filter[6];
-            if (x1 >= 0 && x1 < nbyn) sum += currentInput[y2 * nbyn + x1] * filter[7];
-            if (x2 >= 0 && x2 < nbyn) sum += currentInput[y2 * nbyn + x2] * filter[8];
-        }
+        sum += topLeft * filter[0] + top * filter[1] + topRight * filter[2]
+             + left * filter[3] + center * filter[4] + right * filter[5]
+             + bottomLeft * filter[6] + bottom * filter[7] + bottomRight * filter[8];
     }
     
     sum += biases[outNeuron];
-    sum = max(0.0f, sum);  // ReLU activation
+    sum = max(0.0f, sum);
     
-    const int batch_offset = batch * outDim * nbyn * nbyn;
-    output[batch_offset + outNeuron * nbyn * nbyn + row * nbyn + col] = sum;
+    const int output_offset = batch * outDim * nbyn * nbyn;
+    output[output_offset + outNeuron * nbyn * nbyn + center_idx] = sum;
 }
 
 kernel void max_pooling_kernel(
