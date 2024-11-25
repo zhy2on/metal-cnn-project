@@ -3,15 +3,13 @@
 using namespace metal;
 
 constant int BATCH_SIZE = 64;
-constant int TILE_SIZE = 16;
 
 kernel void convolution_kernel(
     device const float* input [[buffer(0)]],
     device float* output [[buffer(1)]],
     device const float* network [[buffer(2)]],
     device const int* params [[buffer(3)]],
-    uint3 tid [[thread_position_in_grid]],
-    uint3 lid [[thread_position_in_threadgroup]]
+    uint3 tid [[thread_position_in_grid]]
 ) {
     const int inDim = params[0];
     const int outDim = params[1];
@@ -19,95 +17,57 @@ kernel void convolution_kernel(
     const int imageOffset = params[3];
     const int networkOffset = params[4];
     
-    // threadgroup memory (with padding)
-    threadgroup float tile[TILE_SIZE + 2][TILE_SIZE + 2];
+    const int idx = tid.x;
+    const int outNeuron = tid.y;
+    const int batch = tid.z;
     
-    const int col = tid.x;
-    const int row = tid.y;
-    const int batch_outNeuron = tid.z;
-    const int batch = batch_outNeuron / outDim;
-    const int outNeuron = batch_outNeuron % outDim;
+    if (outNeuron >= outDim || batch >= BATCH_SIZE) return;
     
-    if (row >= nbyn || col >= nbyn || batch >= BATCH_SIZE || outNeuron >= outDim) {
-        return;
-    }
+    const int row = idx / nbyn;
+    const int col = idx % nbyn;
     
-    const int local_x = lid.x;
-    const int local_y = lid.y;
-    
-    const int batchOffset = batch * inDim * nbyn * nbyn;
-    float sum = 0.0f;
+    if (row >= nbyn || col >= nbyn) return;
     
     const device float* filters = network + networkOffset;
     const device float* biases = filters + 3 * 3 * inDim * outDim;
+    float sum = 0.0f;
     
-    // Load input data into the tile
+    const int batch_offset = batch * inDim * nbyn * nbyn;
+    const int filter_offset = outNeuron * inDim * 9;
+    
+    const int center_idx = row * nbyn + col;
+    const int top_idx = ((row > 0) ? (row-1) : row) * nbyn + col;
+    const int bottom_idx = ((row < nbyn-1) ? (row+1) : row) * nbyn + col;
+    
     for (int inNeuron = 0; inNeuron < inDim; ++inNeuron) {
-        // Load main tile data
-        tile[local_y + 1][local_x + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + row * nbyn + col];
+        const device float* currentInput = input + imageOffset + batch_offset + inNeuron * nbyn * nbyn;
+        const device float* filter = filters + filter_offset + inNeuron * 9;
         
-        // Load padding area data
-        if (local_y == 0 && row > 0) {
-            tile[0][local_x + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row - 1) * nbyn + col];
-        }
-        if (local_y == TILE_SIZE - 1 && row < nbyn - 1) {
-            tile[TILE_SIZE + 1][local_x + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row + 1) * nbyn + col];
-        }
-        if (local_x == 0 && col > 0) {
-            tile[local_y + 1][0] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + row * nbyn + (col - 1)];
-        }
-        if (local_x == TILE_SIZE - 1 && col < nbyn - 1) {
-            tile[local_y + 1][TILE_SIZE + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + row * nbyn + (col + 1)];
-        }
+        // Center row
+        const float center = currentInput[center_idx];
+        const float left = (col > 0) ? currentInput[center_idx - 1] : 0;
+        const float right = (col < nbyn-1) ? currentInput[center_idx + 1] : 0;
         
-        // Load corner area data
-        if (local_x == 0 && local_y == 0) {
-            if (row > 0 && col > 0) {
-                tile[0][0] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row - 1) * nbyn + (col - 1)];
-            }
-        }
-        if (local_x == TILE_SIZE - 1 && local_y == 0) {
-            if (row > 0 && col < nbyn - 1) {
-                tile[0][TILE_SIZE + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row - 1) * nbyn + (col + 1)];
-            }
-        }
-        if (local_x == 0 && local_y == TILE_SIZE - 1) {
-            if (row < nbyn - 1 && col > 0) {
-                tile[TILE_SIZE + 1][0] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row + 1) * nbyn + (col - 1)];
-            }
-        }
-        if (local_x == TILE_SIZE - 1 && local_y == TILE_SIZE - 1) {
-            if (row < nbyn - 1 && col < nbyn - 1) {
-                tile[TILE_SIZE + 1][TILE_SIZE + 1] = input[imageOffset + batchOffset + inNeuron * nbyn * nbyn + (row + 1) * nbyn + (col + 1)];
-            }
-        }
+        // Top row
+        const float top = (row > 0) ? currentInput[top_idx] : 0;
+        const float topLeft = (row > 0 && col > 0) ? currentInput[top_idx - 1] : 0;
+        const float topRight = (row > 0 && col < nbyn-1) ? currentInput[top_idx + 1] : 0;
         
-        // Synchronize the threadgroup after loading the tile data
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+        // Bottom row
+        const float bottom = (row < nbyn-1) ? currentInput[bottom_idx] : 0;
+        const float bottomLeft = (row < nbyn-1 && col > 0) ? currentInput[bottom_idx - 1] : 0;
+        const float bottomRight = (row < nbyn-1 && col < nbyn-1) ? currentInput[bottom_idx + 1] : 0;
         
-        // Perform convolution
-        const device float* filter = filters + (outNeuron * inDim + inNeuron) * 9;
-        for (int i = 0; i < 3; ++i) {
-            int y = row + i - 1;
-            if (y >= 0 && y < nbyn) {
-                for (int j = 0; j < 3; ++j) {
-                    int x = col + j - 1;
-                    if (x >= 0 && x < nbyn) {
-                        sum += tile[local_y + i][local_x + j] * filter[i * 3 + j];
-                    }
-                }
-            }
-        }
-        
-        // Synchronize the threadgroup after the convolution
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+        sum += topLeft * filter[0] + top * filter[1] + topRight * filter[2]
+             + left * filter[3] + center * filter[4] + right * filter[5]
+             + bottomLeft * filter[6] + bottom * filter[7] + bottomRight * filter[8];
     }
     
-    // Apply ReLU activation and store the result
     sum += biases[outNeuron];
     sum = max(0.0f, sum);
-    const int outputOffset = batch * outDim * nbyn * nbyn;
-    output[outputOffset + outNeuron * nbyn * nbyn + row * nbyn + col] = sum;
+    
+    const int output_offset = batch * outDim * nbyn * nbyn;
+    output[output_offset + outNeuron * nbyn * nbyn + center_idx] = sum;
 }
 
 kernel void max_pooling_kernel(
