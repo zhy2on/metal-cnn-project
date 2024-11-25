@@ -306,23 +306,31 @@ void cnn(float* images, float* network, int* labels, float* confidences, int num
     cnn_init();
     
     @autoreleasepool {
-        // Metal 버퍼 초기화
         init_metal_buffers(images, network, num_of_image);
-    
+        
         int full_batches = num_of_image / BATCH_SIZE;
         int remaining_images = num_of_image % BATCH_SIZE;
-    
-        // 전체 배치 처리
+        
+        dispatch_queue_t queue = dispatch_queue_create("com.cnn.parallel", DISPATCH_QUEUE_CONCURRENT);
+        dispatch_group_t group = dispatch_group_create();
+        
+        // 병렬로 배치 처리
         for (int i = 0; i < full_batches; ++i) {
-            process_single_batch(INPUT_SIZE * INPUT_SIZE * NUM_CHANNELS * i * BATCH_SIZE,
-                               labels, confidences, i, BATCH_SIZE);
+            dispatch_group_async(group, queue, ^{
+                process_single_batch(INPUT_SIZE * INPUT_SIZE * NUM_CHANNELS * i * BATCH_SIZE,
+                                   labels, confidences, i, BATCH_SIZE);
+            });
         }
-    
+        
         // 남은 이미지 처리
         if (remaining_images > 0) {
-            process_single_batch(INPUT_SIZE * INPUT_SIZE * NUM_CHANNELS * full_batches * BATCH_SIZE,
-                               labels, confidences, full_batches, remaining_images);
+            dispatch_group_async(group, queue, ^{
+                process_single_batch(INPUT_SIZE * INPUT_SIZE * NUM_CHANNELS * full_batches * BATCH_SIZE,
+                                   labels, confidences, full_batches, remaining_images);
+            });
         }
+        
+        dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
     }
     
     gettimeofday(&end_time, NULL);
