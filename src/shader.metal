@@ -1,137 +1,139 @@
-// shader.metal
 #include <metal_stdlib>
 using namespace metal;
 
-constant int BATCH_SIZE = 64;
-
-kernel void convolution_kernel(
-    device const float* input [[buffer(0)]],
-    device float* output [[buffer(1)]],
-    device const float* network [[buffer(2)]],
-    device const int* params [[buffer(3)]],
-    uint3 tid [[thread_position_in_grid]]
+kernel void convolution(
+    const device float* inputs [[buffer(0)]],
+    device float* outputs [[buffer(1)]],
+    const device float* networks [[buffer(2)]],
+    constant int& inDim [[buffer(3)]],
+    constant int& outDim [[buffer(4)]],
+    constant int& nbyn [[buffer(5)]],
+    constant int& image_offset [[buffer(6)]],
+    constant int& filter_offset [[buffer(7)]],
+    uint3 position [[thread_position_in_grid]]
 ) {
-    const int inDim = params[0];
-    const int outDim = params[1];
-    const int nbyn = params[2];
-    const int imageOffset = params[3];
-    const int networkOffset = params[4];
+    const int idx = position.x;
+    const int outNeuron = position.y;
+    const int batch = position.z;
     
-    const int idx = tid.x;
-    const int outNeuron = tid.y;
-    const int batch = tid.z;
-    
-    if (outNeuron >= outDim || batch >= BATCH_SIZE) return;
+    // Early return for out of bounds
+    if (outNeuron >= outDim || batch >= 500) return;  // BATCH_SIZE = 500
     
     const int row = idx / nbyn;
     const int col = idx % nbyn;
     
     if (row >= nbyn || col >= nbyn) return;
     
-    const device float* filters = network + networkOffset;
+    // Pre-calculate offsets
+    const device float* filters = networks + filter_offset;
     const device float* biases = filters + 3 * 3 * inDim * outDim;
+    
     float sum = 0.0f;
-    
     const int batch_offset = batch * inDim * nbyn * nbyn;
-    const int filter_offset = outNeuron * inDim * 9;
-    
     const int center_idx = row * nbyn + col;
-    const int top_idx = ((row > 0) ? (row-1) : row) * nbyn + col;
-    const int bottom_idx = ((row < nbyn-1) ? (row+1) : row) * nbyn + col;
     
+    #pragma unroll(3)
     for (int inNeuron = 0; inNeuron < inDim; ++inNeuron) {
-        const device float* currentInput = input + imageOffset + batch_offset + inNeuron * nbyn * nbyn;
-        const device float* filter = filters + filter_offset + inNeuron * 9;
+        const device float* current_input = inputs + image_offset + batch_offset + inNeuron * nbyn * nbyn;
+        const device float* filter = filters + (outNeuron * inDim + inNeuron) * 9;
         
-        // Center row
-        const float center = currentInput[center_idx];
-        const float left = (col > 0) ? currentInput[center_idx - 1] : 0;
-        const float right = (col < nbyn-1) ? currentInput[center_idx + 1] : 0;
+        // Center pixels
+        float center = current_input[center_idx];
+        float left = (col > 0) ? current_input[center_idx - 1] : 0.0f;
+        float right = (col < nbyn-1) ? current_input[center_idx + 1] : 0.0f;
         
-        // Top row
-        const float top = (row > 0) ? currentInput[top_idx] : 0;
-        const float topLeft = (row > 0 && col > 0) ? currentInput[top_idx - 1] : 0;
-        const float topRight = (row > 0 && col < nbyn-1) ? currentInput[top_idx + 1] : 0;
+        // Top pixels
+        int top_idx = (row > 0) ? center_idx - nbyn : center_idx;
+        float top = (row > 0) ? current_input[top_idx] : 0.0f;
+        float top_left = (row > 0 && col > 0) ? current_input[top_idx - 1] : 0.0f;
+        float top_right = (row > 0 && col < nbyn-1) ? current_input[top_idx + 1] : 0.0f;
         
-        // Bottom row
-        const float bottom = (row < nbyn-1) ? currentInput[bottom_idx] : 0;
-        const float bottomLeft = (row < nbyn-1 && col > 0) ? currentInput[bottom_idx - 1] : 0;
-        const float bottomRight = (row < nbyn-1 && col < nbyn-1) ? currentInput[bottom_idx + 1] : 0;
+        // Bottom pixels
+        int bottom_idx = (row < nbyn-1) ? center_idx + nbyn : center_idx;
+        float bottom = (row < nbyn-1) ? current_input[bottom_idx] : 0.0f;
+        float bottom_left = (row < nbyn-1 && col > 0) ? current_input[bottom_idx - 1] : 0.0f;
+        float bottom_right = (row < nbyn-1 && col < nbyn-1) ? current_input[bottom_idx + 1] : 0.0f;
         
-        sum += topLeft * filter[0] + top * filter[1] + topRight * filter[2]
+        sum += top_left * filter[0] + top * filter[1] + top_right * filter[2]
              + left * filter[3] + center * filter[4] + right * filter[5]
-             + bottomLeft * filter[6] + bottom * filter[7] + bottomRight * filter[8];
+             + bottom_left * filter[6] + bottom * filter[7] + bottom_right * filter[8];
     }
     
     sum += biases[outNeuron];
-    sum = max(0.0f, sum);
+    sum = fmax(0.0f, sum);  // ReLU activation
     
-    const int output_offset = batch * outDim * nbyn * nbyn;
-    output[output_offset + outNeuron * nbyn * nbyn + center_idx] = sum;
+    int out_idx = batch * outDim * nbyn * nbyn + outNeuron * nbyn * nbyn + center_idx;
+    outputs[out_idx] = sum;
 }
 
-kernel void max_pooling_kernel(
-    device const float* input [[buffer(0)]],
+kernel void max_pooling(
+    const device float* input [[buffer(0)]],
     device float* output [[buffer(1)]],
-    device const int* params [[buffer(2)]],
-    uint3 tid [[thread_position_in_grid]]
+    constant int& DIM [[buffer(2)]],
+    constant int& nbyn [[buffer(3)]],
+    uint3 position [[thread_position_in_grid]]
 ) {
-    const int DIM = params[0];
-    const int outNbyn = params[1];
+    const int n = position.x;
+    const int idx = position.y;
+    const int batch = position.z;
     
-    const int n = tid.x;
-    const int idx = tid.y;
-    const int batch = tid.z;
+    // Calculate output dimensions
+    const int out_dim = nbyn / 2;
     
-    if (batch >= BATCH_SIZE || n >= DIM || idx >= outNbyn * outNbyn) {
-        return;
-    }
+    if (batch >= 500 || n >= DIM || idx >= out_dim * out_dim) return;
     
-    const int inNbyn = outNbyn * 2;
+    // Calculate input/output positions
+    const int row = idx / out_dim;
+    const int col = idx % out_dim;
     
-    const int row = idx / outNbyn;
-    const int col = idx % outNbyn;
+    const int in_row = row * 2;
+    const int in_col = col * 2;
     
-    const int inRow = row * 2;
-    const int inCol = col * 2;
+    // Calculate memory offsets
+    const int in_offset = batch * DIM * nbyn * nbyn + n * nbyn * nbyn;
+    const int out_offset = batch * DIM * out_dim * out_dim + n * out_dim * out_dim;
     
-    const int input_offset = batch * DIM * inNbyn * inNbyn;
-    const int output_offset = batch * DIM * outNbyn * outNbyn;
+    // Get 2x2 window values
+    float val1 = input[in_offset + in_row * nbyn + in_col];
+    float val2 = input[in_offset + in_row * nbyn + (in_col + 1)];
+    float val3 = input[in_offset + (in_row + 1) * nbyn + in_col];
+    float val4 = input[in_offset + (in_row + 1) * nbyn + (in_col + 1)];
     
-    float maxVal = input[input_offset + n * inNbyn * inNbyn + inRow * inNbyn + inCol];
-    maxVal = max(maxVal, input[input_offset + n * inNbyn * inNbyn + inRow * inNbyn + inCol + 1]);
-    maxVal = max(maxVal, input[input_offset + n * inNbyn * inNbyn + (inRow + 1) * inNbyn + inCol]);
-    maxVal = max(maxVal, input[input_offset + n * inNbyn * inNbyn + (inRow + 1) * inNbyn + inCol + 1]);
+    // Find max value
+    float max_val = fmax(fmax(val1, val2), fmax(val3, val4));
     
-    output[output_offset + n * outNbyn * outNbyn + row * outNbyn + col] = maxVal;
+    // Write result
+    output[out_offset + row * out_dim + col] = max_val;
 }
 
-kernel void fc_layer_kernel(
-    device const float* input [[buffer(0)]],
+kernel void fc_layer(
+    const device float* input [[buffer(0)]],
     device float* output [[buffer(1)]],
-    device const float* network [[buffer(2)]],
-    device const int* params [[buffer(3)]],
-    uint2 tid [[thread_position_in_grid]]
+    const device float* network [[buffer(2)]],
+    constant int& inDim [[buffer(3)]],
+    constant int& outDim [[buffer(4)]],
+    constant int& offset [[buffer(5)]],
+    uint2 position [[thread_position_in_grid]]
 ) {
-    const int inDim = params[0];
-    const int outDim = params[1];
-    const int networkOffset = params[2];
+    const int outIdx = position.x;
+    const int batch = position.y;
+    if (outIdx >= outDim || batch >= 500) return;
     
-    const int outIdx = tid.x;
-    const int batch = tid.y;
+    // Get weights and bias pointers
+    const device float* weights = network + offset;
+    const device float* bias = weights + inDim * outDim;
     
-    if (outIdx >= outDim || batch >= BATCH_SIZE) {
-        return;
-    }
-    
-    const device float* weights = network + networkOffset;
-    const device float* biases = weights + inDim * outDim;
-    
+    // Calculate dot product
     float sum = 0.0f;
-    for (int inIdx = 0; inIdx < inDim; ++inIdx) {
-        sum += input[batch * inDim + inIdx] * weights[outIdx * inDim + inIdx];
+    int input_offset = batch * inDim;
+    int weight_offset = outIdx * inDim;
+    
+    #pragma unroll(8)
+    for (int i = 0; i < inDim; ++i) {
+        sum += input[input_offset + i] * weights[weight_offset + i];
     }
     
-    sum += biases[outIdx];
-    output[batch * outDim + outIdx] = max(0.0f, sum);  // ReLU activation
+    // Add bias and apply ReLU
+    sum += bias[outIdx];
+    output[batch * outDim + outIdx] = fmax(0.0f, sum);
 }
