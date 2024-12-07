@@ -6,8 +6,11 @@ CXXFLAGS = -framework Metal -framework Foundation -framework CoreGraphics -I./in
 BUILD_DIR = build
 SRC_DIR = src
 
+# Metal 컴파일러 플래그 추가
+METAL_FLAGS = -D BATCH_SIZE=500 -D TILE_SIZE=16 -D WPT=4 -D BPT=4
+
 # 소스 파일들
-SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/compare.cpp $(SRC_DIR)/cnn_metal.mm $(SRC_DIR)/cnn_seq.cpp
+SRCS = $(SRC_DIR)/main.cpp $(SRC_DIR)/compare.cpp $(SRC_DIR)/cnn_metal.mm
 METAL_SRC = $(SRC_DIR)/shader.metal
 
 # 메탈 라이브러리
@@ -24,7 +27,7 @@ dirs:
 
 # Metal 셰이더 컴파일
 $(METAL_AIR): $(METAL_SRC)
-	$(METAL) -c $< -o $@
+	$(METAL) $(METAL_FLAGS) -c $< -o $@
 
 $(METAL_LIB): $(METAL_AIR)
 	$(METALLIB) $< -o $@

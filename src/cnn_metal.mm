@@ -5,6 +5,11 @@
 #include <stdlib.h>
 #include <sys/time.h>
 
+#define BATCH_SIZE      500     // batch size
+#define TILE_SIZE       16      // tile size
+#define WPT             4       // work per thread
+#define BPT             4       // batch per thread
+
 // Metal 관련 전역 변수
 id<MTLDevice> device;
 id<MTLCommandQueue> queue;
@@ -25,7 +30,6 @@ id<MTLBuffer> b_pool_out;
 id<MTLBuffer> b_fc_in;
 id<MTLBuffer> b_fc_out;
 
-const int BATCH_SIZE = 500;
 int image_offset, network_offset;
 
 void setupMetal() {
@@ -45,9 +49,18 @@ void setupMetal() {
     
     // Metal 라이브러리 로드
     NSError* error = nil;
-    library = [device newDefaultLibrary];
+    NSString* path = [[NSBundle mainBundle] pathForResource:@"shader" ofType:@"metallib"];
+    if (!path) {
+        printf("Failed to find shader.metallib\n");
+        exit(1);
+    }
+    
+    NSURL *libraryURL = [NSURL fileURLWithPath:path];
+    library = [device newLibraryWithURL:libraryURL error:&error];
+    
     if (!library) {
-        printf("Failed to load default library\n");
+        printf("Failed to load Metal library: %s\n",
+               error ? [[error localizedDescription] UTF8String] : "unknown error");
         exit(1);
     }
     
@@ -77,9 +90,9 @@ void convolution_metal(id<MTLBuffer> inputs, id<MTLBuffer> outputs, int in_dim, 
     [computeEncoder setBytes:&image_offset length:sizeof(int) atIndex:6];
     [computeEncoder setBytes:&network_offset length:sizeof(int) atIndex:7];
     
-    MTLSize gridSize = MTLSizeMake(nbyn * nbyn, out_dim, BATCH_SIZE);
-    MTLSize threadGroupSize = MTLSizeMake(16, 16, 1);
-    
+    MTLSize gridSize = MTLSizeMake(nbyn * nbyn / WPT, out_dim, BATCH_SIZE / BPT);
+    MTLSize threadGroupSize = MTLSizeMake(TILE_SIZE, TILE_SIZE, 1);
+
     [computeEncoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadGroupSize];
     [computeEncoder endEncoding];
     
