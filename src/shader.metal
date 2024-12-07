@@ -77,33 +77,29 @@ kernel void max_pooling(
     const int idx = position.y;
     const int batch = position.z;
     
-    // Calculate outputs dimensions
-    const int out_dim = nbyn / 2;
+    if (batch >= 500 || n >= in_dim || idx >= nbyn * nbyn) return;
     
-    if (batch >= 500 || n >= in_dim || idx >= out_dim * out_dim) return;
-    
-    // Calculate inputs/outputs positions
-    const int row = idx / out_dim;
-    const int col = idx % out_dim;
-    
+    // Calculate positions (nbyn is already output size)
+    const int row = idx / nbyn;
+    const int col = idx % nbyn;
     const int in_row = row * 2;
     const int in_col = col * 2;
     
-    // Calculate memory network_offsets
-    const int in_network_offset = batch * in_dim * nbyn * nbyn + n * nbyn * nbyn;
-    const int out_network_offset = batch * in_dim * out_dim * out_dim + n * out_dim * out_dim;
-    
-    // Get 2x2 window values
-    float val1 = inputs[in_network_offset + in_row * nbyn + in_col];
-    float val2 = inputs[in_network_offset + in_row * nbyn + (in_col + 1)];
-    float val3 = inputs[in_network_offset + (in_row + 1) * nbyn + in_col];
-    float val4 = inputs[in_network_offset + (in_row + 1) * nbyn + (in_col + 1)];
-    
+    // Calculate memory offsets (input size is 2*nbyn)
+    const int in_offset = batch * in_dim * (2*nbyn) * (2*nbyn) + n * (2*nbyn) * (2*nbyn);
+    const int out_offset = batch * in_dim * nbyn * nbyn + n * nbyn * nbyn;
+
+    // Get 2x2 window values from input (note the 2*nbyn stride)
+    float val1 = inputs[in_offset + in_row * (2*nbyn) + in_col];
+    float val2 = inputs[in_offset + in_row * (2*nbyn) + (in_col + 1)];
+    float val3 = inputs[in_offset + (in_row + 1) * (2*nbyn) + in_col];
+    float val4 = inputs[in_offset + (in_row + 1) * (2*nbyn) + (in_col + 1)];
+
     // Find max value
     float max_val = fmax(fmax(val1, val2), fmax(val3, val4));
-    
+
     // Write result
-    outputs[out_network_offset + row * out_dim + col] = max_val;
+    outputs[out_offset + row * nbyn + col] = max_val;
 }
 
 kernel void fc_layer(

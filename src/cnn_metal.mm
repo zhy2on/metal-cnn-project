@@ -26,42 +26,7 @@ id<MTLBuffer> b_fc_in;
 id<MTLBuffer> b_fc_out;
 
 const int BATCH_SIZE = 500;
-
-const int INPUT_in_dim[] = {3,	  64,  64,
-
-						 64,  128, 128,
-
-						 128, 256, 256, 256,
-
-						 256, 512, 512, 512,
-
-						 512, 512, 512, 512,
-
-						 512, 512, 512};
-
-const int OUTPUT_in_dim[] = {64,  64,	64,
-
-						  128, 128, 128,
-
-						  256, 256, 256, 256,
-
-						  512, 512, 512, 512,
-
-						  512, 512, 512, 512,
-
-						  512, 512, 10};
-
-const int NBYN[] = {32, 32, 16,
-
-					16, 16, 8,
-
-					8,	8,	8,	4,
-
-					4,	4,	4,	2,
-
-					2,	2,	2,	1,
-
-					1,	1,	1};
+int image_offset, network_offset;
 
 void setupMetal() {
     // Metal 디바이스 생성
@@ -97,8 +62,7 @@ void setupMetal() {
     p_fc = [device newComputePipelineStateWithFunction:f_fc error:&error];
 }
 
-void convolution_metal(id<MTLBuffer> inputs, id<MTLBuffer> outputs, int in_dim, int out_dim, int nbyn, 
-                      int image_offset, int network_offset) {
+void convolution_metal(id<MTLBuffer> inputs, id<MTLBuffer> outputs, int in_dim, int out_dim, int nbyn) {
     id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
     id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
     
@@ -106,8 +70,7 @@ void convolution_metal(id<MTLBuffer> inputs, id<MTLBuffer> outputs, int in_dim, 
     [computeEncoder setBuffer:inputs offset:0 atIndex:0];
     [computeEncoder setBuffer:outputs offset:0 atIndex:1];
     [computeEncoder setBuffer:b_net offset:0 atIndex:2];
-    
-    // Parameters
+
     [computeEncoder setBytes:&in_dim length:sizeof(int) atIndex:3];
     [computeEncoder setBytes:&out_dim length:sizeof(int) atIndex:4];
     [computeEncoder setBytes:&nbyn length:sizeof(int) atIndex:5];
@@ -134,7 +97,7 @@ void max_pooling_metal(id<MTLBuffer> inputs, id<MTLBuffer> outputs, int in_dim, 
     [computeEncoder setBytes:&in_dim length:sizeof(int) atIndex:2];
     [computeEncoder setBytes:&nbyn length:sizeof(int) atIndex:3];
     
-    MTLSize gridSize = MTLSizeMake(in_dim, nbyn / 2 * nbyn / 2, BATCH_SIZE);
+    MTLSize gridSize = MTLSizeMake(in_dim, nbyn * nbyn, BATCH_SIZE);
     MTLSize threadGroupSize = MTLSizeMake(16, 16, 1);
     
     [computeEncoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadGroupSize];
@@ -144,7 +107,7 @@ void max_pooling_metal(id<MTLBuffer> inputs, id<MTLBuffer> outputs, int in_dim, 
     [commandBuffer waitUntilCompleted];
 }
 
-void fc_layer_metal(id<MTLBuffer> inputs, id<MTLBuffer> outputs, int in_dim, int out_dim, int network_offset) {
+void fc_layer_metal(id<MTLBuffer> inputs, id<MTLBuffer> outputs, int in_dim, int out_dim) {
     id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
     id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
     
@@ -256,94 +219,59 @@ void cnn_init(float* images, float* network, int* labels, float* confidences, in
                                        options:MTLResourceStorageModeShared];
 }
 
-void initialize_network_offsets(int* offsets) {
-    // Convolution layers (0-12)
-    offsets[0] = 3 * 3 * INPUT_in_dim[0] * OUTPUT_in_dim[0] + OUTPUT_in_dim[0];
-    offsets[1] = 3 * 3 * INPUT_in_dim[1] * OUTPUT_in_dim[1] + OUTPUT_in_dim[1];
-    offsets[2] = 3 * 3 * INPUT_in_dim[3] * OUTPUT_in_dim[3] + OUTPUT_in_dim[3];
-    offsets[3] = 3 * 3 * INPUT_in_dim[4] * OUTPUT_in_dim[4] + OUTPUT_in_dim[4];
-    offsets[4] = 3 * 3 * INPUT_in_dim[6] * OUTPUT_in_dim[6] + OUTPUT_in_dim[6];
-    offsets[5] = 3 * 3 * INPUT_in_dim[7] * OUTPUT_in_dim[7] + OUTPUT_in_dim[7];
-    offsets[6] = 3 * 3 * INPUT_in_dim[8] * OUTPUT_in_dim[8] + OUTPUT_in_dim[8];
-    offsets[7] = 3 * 3 * INPUT_in_dim[10] * OUTPUT_in_dim[10] + OUTPUT_in_dim[10];
-    offsets[8] = 3 * 3 * INPUT_in_dim[11] * OUTPUT_in_dim[11] + OUTPUT_in_dim[11];
-    offsets[9] = 3 * 3 * INPUT_in_dim[12] * OUTPUT_in_dim[12] + OUTPUT_in_dim[12];
-    offsets[10] = 3 * 3 * INPUT_in_dim[14] * OUTPUT_in_dim[14] + OUTPUT_in_dim[14];
-    offsets[11] = 3 * 3 * INPUT_in_dim[15] * OUTPUT_in_dim[15] + OUTPUT_in_dim[15];
-    offsets[12] = 3 * 3 * INPUT_in_dim[16] * OUTPUT_in_dim[16] + OUTPUT_in_dim[16];
-
-    // FC layers (13-14)
-    offsets[13] = INPUT_in_dim[18] * OUTPUT_in_dim[18] + OUTPUT_in_dim[18];
-    offsets[14] = INPUT_in_dim[19] * OUTPUT_in_dim[19] + OUTPUT_in_dim[19];
-}
-
-void process_single_batch(const int* network_offsets, float* result, int batch_start_idx, int current_batch_size) {
-    int image_offset = 32 * 32 * 3 * batch_start_idx;
-    int network_offset = 0;
+void process_single_batch(float* result, int batch_start_idx, int current_batch_size) {
+    image_offset = 32 * 32 * 3 * batch_start_idx;
+    network_offset = 0;
 
     // Convolution layer 1
-    convolution_metal(b_imgs, b_conv_out, INPUT_in_dim[0], OUTPUT_in_dim[0], NBYN[0], 
-                     image_offset, network_offset);
+    convolution_metal(b_imgs, b_conv_out, 3, 64, 32);
     image_offset = 0;
-    network_offset += network_offsets[0];
+    network_offset += 3 * 3 * 3 * 64 + 64;;
 
     // Convolution layer 2
-    convolution_metal(b_conv_out, b_conv_in, INPUT_in_dim[1], OUTPUT_in_dim[1], 
-                     NBYN[1], image_offset, network_offset);
-    network_offset += network_offsets[1];
-    max_pooling_metal(b_conv_in, b_pool_out, INPUT_in_dim[2], NBYN[2] * 2);
+    convolution_metal(b_conv_out, b_conv_in, 64, 64, 32);
+    network_offset += 3 * 3 * 64 * 64 + 64;
+    max_pooling_metal(b_conv_in, b_pool_out, 64, 16);
 
     // Convolution block 1
-    convolution_metal(b_pool_out, b_conv_out, INPUT_in_dim[3], OUTPUT_in_dim[3], 
-                     NBYN[3], image_offset, network_offset);
-    network_offset += network_offsets[2];
-    convolution_metal(b_conv_out, b_conv_in, INPUT_in_dim[4], OUTPUT_in_dim[4], 
-                     NBYN[4], image_offset, network_offset);
-    network_offset += network_offsets[3];
-    max_pooling_metal(b_conv_in, b_pool_out, INPUT_in_dim[5], NBYN[5] * 2);
+    convolution_metal(b_pool_out, b_conv_out, 64, 128, 16);
+    network_offset += 3 * 3 * 64 * 128 + 128;
+    convolution_metal(b_conv_out, b_conv_in, 128, 128, 16);
+    network_offset += 3 * 3 * 128 * 128 + 128;
+    max_pooling_metal(b_conv_in, b_pool_out, 128, 8);
 
     // Convolution block 2
-    convolution_metal(b_pool_out, b_conv_out, INPUT_in_dim[6], OUTPUT_in_dim[6], 
-                     NBYN[6], image_offset, network_offset);
-    network_offset += network_offsets[4];
-    convolution_metal(b_conv_out, b_conv_in, INPUT_in_dim[7], OUTPUT_in_dim[7], 
-                     NBYN[7], image_offset, network_offset);
-    network_offset += network_offsets[5];
-    convolution_metal(b_conv_in, b_conv_out, INPUT_in_dim[8], OUTPUT_in_dim[8], 
-                     NBYN[8], image_offset, network_offset);
-    network_offset += network_offsets[6];
-    max_pooling_metal(b_conv_out, b_pool_out, INPUT_in_dim[9], NBYN[9] * 2);
-
+    convolution_metal(b_pool_out, b_conv_out, 128, 256, 8);
+    network_offset += 3 * 3 * 128 * 256 + 256;
+    convolution_metal(b_conv_out, b_conv_in, 256, 256, 8);
+    network_offset += 3 * 3 * 256 * 256 + 256;
+    convolution_metal(b_conv_in, b_conv_out, 256, 256, 8);
+    network_offset += 3 * 3 * 256 * 256 + 256;
+    max_pooling_metal(b_conv_out, b_pool_out, 256, 4);
     // Convolution block 3
-    convolution_metal(b_pool_out, b_conv_out, INPUT_in_dim[10], OUTPUT_in_dim[10], 
-                     NBYN[10], image_offset, network_offset);
-    network_offset += network_offsets[7];
-    convolution_metal(b_conv_out, b_conv_in, INPUT_in_dim[11], OUTPUT_in_dim[11], 
-                     NBYN[11], image_offset, network_offset);
-    network_offset += network_offsets[8];
-    convolution_metal(b_conv_in, b_conv_out, INPUT_in_dim[12], OUTPUT_in_dim[12], 
-                     NBYN[12], image_offset, network_offset);
-    network_offset += network_offsets[9];
-    max_pooling_metal(b_conv_out, b_pool_out, INPUT_in_dim[13], NBYN[13] * 2);
+    convolution_metal(b_pool_out, b_conv_out, 256, 512, 4);
+    network_offset += 3 * 3 * 256 * 512 + 512;
+    convolution_metal(b_conv_out, b_conv_in, 512, 512, 4);
+    network_offset += 3 * 3 * 512 * 512 + 512;
+    convolution_metal(b_conv_in, b_conv_out, 512, 512, 4);
+    network_offset += 3 * 3 * 512 * 512 + 512;
+    max_pooling_metal(b_conv_out, b_pool_out, 512, 2);
 
     // Convolution block 4
-    convolution_metal(b_pool_out, b_conv_out, INPUT_in_dim[14], OUTPUT_in_dim[14], 
-                     NBYN[14], image_offset, network_offset);
-    network_offset += network_offsets[10];
-    convolution_metal(b_conv_out, b_conv_in, INPUT_in_dim[15], OUTPUT_in_dim[15], 
-                     NBYN[15], image_offset, network_offset);
-    network_offset += network_offsets[11];
-    convolution_metal(b_conv_in, b_conv_out, INPUT_in_dim[16], OUTPUT_in_dim[16], 
-                     NBYN[16], image_offset, network_offset);
-    network_offset += network_offsets[12];
-    max_pooling_metal(b_conv_out, b_pool_out, INPUT_in_dim[17], NBYN[17] * 2);
+    convolution_metal(b_pool_out, b_conv_out, 512, 512, 2);
+    network_offset += 3 * 3 * 512 * 512 + 512;
+    convolution_metal(b_conv_out, b_conv_in, 512, 512, 2);
+    network_offset += 3 * 3 * 512 * 512 + 512;
+    convolution_metal(b_conv_in, b_conv_out, 512, 512, 2);
+    network_offset += 3 * 3 * 512 * 512 + 512;
+    max_pooling_metal(b_conv_out, b_pool_out, 512, 1);
 
     // FC layers
-    fc_layer_metal(b_pool_out, b_fc_out, INPUT_in_dim[18], OUTPUT_in_dim[18], network_offset);
-    network_offset += network_offsets[13];
-    fc_layer_metal(b_fc_out, b_fc_in, INPUT_in_dim[19], OUTPUT_in_dim[19], network_offset);
-    network_offset += network_offsets[14];
-    fc_layer_metal(b_fc_in, b_fc_out, INPUT_in_dim[20], OUTPUT_in_dim[20], network_offset);
+    fc_layer_metal(b_pool_out, b_fc_out, 512, 512);
+    network_offset += 512 * 512 + 512;
+    fc_layer_metal(b_fc_out, b_fc_in, 512, 512);
+    network_offset += 512 * 512 + 512;
+    fc_layer_metal(b_fc_in, b_fc_out, 512, 10);
 
     // 결과 복사
     float* fc_outputs_ptr = (float*)[b_fc_out contents];
@@ -366,10 +294,6 @@ void cnn(float* images, float* network, int* labels, float* confidences, int num
     // CNN 초기화
     cnn_init(images, network, labels, confidences, num_images);
 
-    // 네트워크 오프셋 초기화
-    int network_offsets[15];
-    initialize_network_offsets(network_offsets);
-
     // 결과를 저장할 버퍼
     float* result = (float*)malloc(sizeof(float) * 10 * BATCH_SIZE);
 
@@ -382,13 +306,13 @@ void cnn(float* images, float* network, int* labels, float* confidences, int num
 
     // 전체 배치 처리
     for (int i = 0; i < full_batches; i++) {
-        process_single_batch(network_offsets, result, i * BATCH_SIZE, BATCH_SIZE);
+        process_single_batch(result, i * BATCH_SIZE, BATCH_SIZE);
         process_results(result, labels, confidences, i * BATCH_SIZE, BATCH_SIZE);
     }
 
     // 남은 이미지 처리
     if (remaining_images > 0) {
-        process_single_batch(network_offsets, result, full_batches * BATCH_SIZE, remaining_images);
+        process_single_batch(result, full_batches * BATCH_SIZE, remaining_images);
         process_results(result, labels, confidences, full_batches * BATCH_SIZE, remaining_images);
     }
 
